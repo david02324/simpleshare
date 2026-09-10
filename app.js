@@ -19,9 +19,11 @@ const state = {
   secret: null,
   name: localStorage.getItem(KEY_NAME) || defaultName(),
   room: null,
-  actions: null,
+  clip: null,
+  hello: null,
   key: null,
   peers: new Map(),
+  staged: null,
 }
 
 function defaultName() {
@@ -34,7 +36,7 @@ function defaultName() {
   return 'Device'
 }
 
-function toast(msg, ms = 2500) {
+function toast(msg, ms = 2600) {
   const el = $('toast')
   el.textContent = msg
   el.hidden = false
@@ -42,9 +44,18 @@ function toast(msg, ms = 2500) {
   toast.t = setTimeout(() => (el.hidden = true), ms)
 }
 
+function face(name) {
+  for (const el of document.querySelectorAll('.face')) el.hidden = el.id !== `face-${name}`
+}
+
+function fmtSize(n) {
+  if (n < 1024) return `${n} B`
+  if (n < 1048576) return `${(n / 1024).toFixed(0)} KB`
+  return `${(n / 1048576).toFixed(1)} MB`
+}
+
 async function deriveKey(secret) {
-  const raw = b64u.decode(secret)
-  const base = await crypto.subtle.importKey('raw', raw, 'HKDF', false, ['deriveKey'])
+  const base = await crypto.subtle.importKey('raw', b64u.decode(secret), 'HKDF', false, ['deriveKey'])
   return crypto.subtle.deriveKey(
     {name: 'HKDF', hash: 'SHA-256', salt: enc.encode(APP_ID), info: enc.encode('clip')},
     base,
@@ -70,40 +81,30 @@ async function seal(bytes) {
 
 async function open(buf) {
   const bytes = new Uint8Array(buf)
-  const iv = bytes.slice(0, 12)
-  return new Uint8Array(await crypto.subtle.decrypt({name: 'AES-GCM', iv}, state.key, bytes.slice(12)))
+  return new Uint8Array(await crypto.subtle.decrypt({name: 'AES-GCM', iv: bytes.slice(0, 12)}, state.key, bytes.slice(12)))
 }
 
-function pairUrl() {
-  return `${location.origin}${location.pathname}#k=${state.secret}`
-}
-
-function setSecret(secret) {
-  state.secret = secret
-  localStorage.setItem(KEY_SECRET, secret)
-}
-
-function newSecret() {
-  return b64u.encode(crypto.getRandomValues(new Uint8Array(32)))
-}
+const pairUrl = () => `${location.origin}${location.pathname}#k=${state.secret}`
+const newSecret = () => b64u.encode(crypto.getRandomValues(new Uint8Array(32)))
 
 function parseSecret(input) {
-  const m = String(input).trim().match(/#?k=([A-Za-z0-9_-]{43})$/) || String(input).trim().match(/^([A-Za-z0-9_-]{43})$/)
+  const s = String(input).trim()
+  const m = s.match(/#?k=([A-Za-z0-9_-]{43})$/) || s.match(/^([A-Za-z0-9_-]{43})$/)
   return m ? m[1] : null
 }
 
 async function connect() {
-  if (state.room) {
-    state.room.leave()
-    state.room = null
-  }
+  state.room?.leave()
+  state.room = null
   state.peers.clear()
   renderPeers()
   state.key = await deriveKey(state.secret)
   const roomId = await roomIdOf(state.secret)
-  const room = joinRoom({appId: APP_ID, password: state.secret, rtcConfig: RTC, relayConfig: {redundancy: 5}}, roomId, {
-    onJoinError: e => toast(`접속 실패: ${e?.error || e}`),
-  })
+  const room = joinRoom(
+    {appId: APP_ID, password: state.secret, rtcConfig: RTC, relayConfig: {redundancy: 5}},
+    roomId,
+    {onJoinError: e => toast(`연결 실패: ${e?.error || e}`)}
+  )
   const hello = room.makeAction('hello')
   const clip = room.makeAction('clip')
 
@@ -111,11 +112,7 @@ async function connect() {
     state.peers.set(peerId, {name: String(data?.name || peerId.slice(0, 6))})
     renderPeers()
   }
-  clip.onMessage = onClip
-  clip.onReceiveProgress = (p, {peerId, metadata}) => {
-    if (metadata?.type === 'image' && p < 1) setStatus(`수신 중 ${Math.round(p * 100)}%`)
-  }
-
+  clip.onMessage = onReceive
   room.onPeerJoin = peerId => {
     state.peers.set(peerId, {name: peerId.slice(0, 6)})
     renderPeers()
@@ -125,37 +122,90 @@ async function connect() {
     state.peers.delete(peerId)
     renderPeers()
   }
-
-  state.room = room
-  state.actions = {hello, clip}
-  setStatus('연결 대기 중')
-}
-
-function setStatus(text) {
-  $('status-dot').title = text
+  Object.assign(state, {room, hello, clip})
 }
 
 function renderPeers() {
   const ul = $('peer-list')
-  const sel = $('target')
-  const prev = sel.value
-  ul.innerHTML = ''
-  sel.innerHTML = '<option value="">모든 기기</option>'
-  for (const [id, p] of state.peers) {
-    const li = document.createElement('li')
-    li.textContent = p.name
-    ul.appendChild(li)
-    const opt = document.createElement('option')
-    opt.value = id
-    opt.textContent = p.name
-    sel.appendChild(opt)
+  ul.replaceChildren(...[...state.peers.values()].map(p => Object.assign(document.createElement('li'), {textContent: p.name})))
+  if (state.staged && !$('face-pick').hidden) renderTargets()
+}
+
+function stage(items) {
+  if (!items.length) return
+  if (state.peers.size === 0) return toast('연결된 기기가 없습니다')
+  state.staged = items
+  if (state.peers.size === 1) return sendStaged([...state.peers.keys()][0])
+  renderStaged()
+  renderTargets()
+  face('pick')
+}
+
+function renderStaged() {
+  const box = $('staged')
+  box.replaceChildren()
+  const items = state.staged
+  const first = items[0]
+  if (first.kind === 'text') {
+    const snip = document.createElement('p')
+    snip.className = 'snippet'
+    snip.textContent = first.text
+    box.appendChild(snip)
+    return
   }
-  if ([...sel.options].some(o => o.value === prev)) sel.value = prev
-  const n = state.peers.size
-  $('status-dot').className = `dot ${n ? 'on' : ''}`
-  setStatus(n ? `${n}대 연결됨` : '연결 대기 중')
-  $('btn-send').disabled = n === 0
-  $('btn-send-text').disabled = n === 0
+  if (first.blob.type.startsWith('image/')) {
+    const img = document.createElement('img')
+    img.className = 'thumb'
+    img.alt = ''
+    img.src = URL.createObjectURL(first.blob)
+    box.appendChild(img)
+  }
+  const name = document.createElement('p')
+  name.className = 'fname'
+  name.textContent = items.length > 1 ? `${first.name} 외 ${items.length - 1}개` : first.name
+  const meta = document.createElement('p')
+  meta.className = 'fmeta'
+  meta.textContent = fmtSize(items.reduce((s, i) => s + i.blob.size, 0))
+  box.append(name, meta)
+}
+
+function renderTargets() {
+  const wrap = $('pick-targets')
+  const btn = (label, target) => {
+    const b = document.createElement('button')
+    b.className = 'ghost'
+    b.textContent = label
+    b.onclick = () => sendStaged(target)
+    return b
+  }
+  wrap.replaceChildren(...[...state.peers].map(([id, p]) => btn(p.name, id)), btn('모두에게', undefined))
+}
+
+async function sendStaged(target) {
+  const items = state.staged
+  state.staged = null
+  const label = target ? state.peers.get(target)?.name : '모든 기기'
+  face('send')
+  const bar = $('send-bar')
+  try {
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i]
+      $('send-label').textContent = items.length > 1 ? `${label}로 보내는 중 (${i + 1}/${items.length})` : `${label}로 보내는 중`
+      bar.style.width = '0'
+      const bytes = it.kind === 'text' ? enc.encode(it.text) : new Uint8Array(await it.blob.arrayBuffer())
+      const metadata = it.kind === 'text' ? {type: 'text'} : {type: 'file', name: it.name, mime: it.blob.type}
+      await state.clip.send(await seal(bytes), {
+        target,
+        metadata,
+        onProgress: p => (bar.style.width = `${Math.round(p * 100)}%`),
+      })
+    }
+    toast(`${label}에 보냈습니다`)
+  } catch (e) {
+    toast(`보내기 실패: ${e.message || e}`)
+  } finally {
+    face('idle')
+  }
 }
 
 async function readClipboard() {
@@ -164,92 +214,67 @@ async function readClipboard() {
       const items = await navigator.clipboard.read()
       for (const item of items) {
         const mime = item.types.find(t => t.startsWith('image/'))
-        if (mime) return {type: 'image', mime, blob: await item.getType(mime)}
+        if (mime) {
+          const blob = await item.getType(mime)
+          return [{kind: 'file', name: `clipboard.${mime.split('/')[1].replace('jpeg', 'jpg')}`, blob}]
+        }
       }
       for (const item of items) {
         if (item.types.includes('text/plain')) {
-          return {type: 'text', text: await (await item.getType('text/plain')).text()}
+          const text = await (await item.getType('text/plain')).text()
+          return text ? [{kind: 'text', text}] : []
         }
       }
+      return []
     } catch (e) {
       if (e.name !== 'NotAllowedError' && e.name !== 'DataError') throw e
     }
   }
   const text = await navigator.clipboard.readText()
-  return {type: 'text', text}
-}
-
-async function sendPayload(payload) {
-  if (!state.actions || state.peers.size === 0) return toast('연결된 기기가 없습니다')
-  const target = $('target').value || undefined
-  const targetName = target ? state.peers.get(target)?.name : '모든 기기'
-  let bytes, meta
-  if (payload.type === 'image') {
-    bytes = new Uint8Array(await payload.blob.arrayBuffer())
-    meta = {type: 'image', mime: payload.mime}
-  } else {
-    if (!payload.text) return toast('클립보드가 비어 있습니다')
-    bytes = enc.encode(payload.text)
-    meta = {type: 'text'}
-  }
-  const sealed = await seal(bytes)
-  const btn = $('btn-send')
-  btn.disabled = true
-  try {
-    await state.actions.clip.send(sealed, {
-      target,
-      metadata: meta,
-      onProgress: p => p < 1 && meta.type === 'image' && (btn.textContent = `전송 중 ${Math.round(p * 100)}%`),
-    })
-    toast(`${targetName}에 보냈습니다`)
-  } finally {
-    btn.textContent = '클립보드 보내기'
-    btn.disabled = false
-  }
+  return text ? [{kind: 'text', text}] : []
 }
 
 async function onSendClipboard() {
   try {
-    await sendPayload(await readClipboard())
-  } catch (e) {
-    toast(`클립보드 읽기 실패: ${e.message || e}`)
-    $('app').querySelector('.manual').open = true
+    const items = await readClipboard()
+    if (!items.length) return toast('클립보드가 비어 있습니다')
+    stage(items)
+  } catch {
+    toast('클립보드를 읽을 수 없습니다. 텍스트 쓰기나 파일 선택을 이용하세요')
   }
 }
 
-async function onSendText() {
-  const ta = $('manual-text')
-  const text = ta.value
-  if (!text.trim()) return
-  await sendPayload({type: 'text', text})
-  ta.value = ''
+function filesToItems(files) {
+  return [...files].map(f => ({kind: 'file', name: f.name || 'file', blob: f}))
 }
 
-async function onClip(buf, {peerId, metadata}) {
+async function onReceive(buf, {peerId, metadata}) {
   let bytes
   try {
     bytes = await open(buf)
   } catch {
-    return toast('복호화 실패. 그룹이 다른 기기일 수 있습니다')
+    return toast('받은 데이터를 풀 수 없습니다. 상대 기기의 그룹이 다를 수 있습니다')
   }
   const from = state.peers.get(peerId)?.name || peerId.slice(0, 6)
-  const item = metadata?.type === 'image'
-    ? {type: 'image', mime: metadata.mime || 'image/png', blob: new Blob([bytes], {type: metadata.mime || 'image/png'})}
-    : {type: 'text', text: dec.decode(bytes)}
-  addInboxCard(item, from)
-  const ok = await copyToClipboard(item)
-  toast(ok ? `${from}에서 받아 클립보드에 복사했습니다` : `${from}에서 받았습니다. 복사 버튼을 누르세요`)
-  renderPeers()
+  const item = metadata?.type === 'file'
+    ? {kind: 'file', name: metadata.name || 'file', blob: new Blob([bytes], {type: metadata.mime || 'application/octet-stream'})}
+    : {kind: 'text', text: dec.decode(bytes)}
+  addInbox(item, from)
+  const copied = await copyItem(item)
+  if (copied) toast(`${from}에서 받아 클립보드에 넣었습니다`)
+  else if (item.kind === 'text' || item.blob.type.startsWith('image/')) toast(`${from}에서 받았습니다. 복사를 누르세요`)
+  else toast(`${from}에서 받았습니다`)
 }
 
-async function copyToClipboard(item) {
+async function copyItem(item) {
   try {
-    if (item.type === 'text') {
+    if (item.kind === 'text') {
       await navigator.clipboard.writeText(item.text)
-    } else {
-      const blob = item.mime === 'image/png' ? item.blob : await toPng(item.blob)
-      await navigator.clipboard.write([new ClipboardItem({'image/png': blob})])
+      return true
     }
+    if (!item.blob.type.startsWith('image/')) return false
+    const png = item.blob.type === 'image/png' ? item.blob : await toPng(item.blob)
+    await navigator.clipboard.write([new ClipboardItem({'image/png': png})])
     return true
   } catch {
     return false
@@ -265,84 +290,158 @@ async function toPng(blob) {
   return new Promise(res => canvas.toBlob(res, 'image/png'))
 }
 
-function addInboxCard(item, from) {
+function saveItem(item) {
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(item.blob)
+  a.download = item.name
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000)
+}
+
+function addInbox(item, from) {
   $('inbox-empty').hidden = true
-  const card = document.createElement('article')
-  card.className = 'card'
-  const head = document.createElement('div')
-  head.className = 'card-head'
-  const who = document.createElement('span')
-  who.textContent = `${from} · ${new Date().toLocaleTimeString()}`
-  const copy = document.createElement('button')
-  copy.textContent = '복사'
-  copy.onclick = async () => toast((await copyToClipboard(item)) ? '복사했습니다' : '복사 실패')
-  head.append(who, copy)
-  card.appendChild(head)
-  if (item.type === 'image') {
-    const img = document.createElement('img')
-    img.src = URL.createObjectURL(item.blob)
-    img.alt = 'received image'
-    card.appendChild(img)
-  } else {
-    const pre = document.createElement('pre')
-    pre.textContent = item.text
-    card.appendChild(pre)
+  const li = document.createElement('li')
+  const icon = document.createElement('div')
+  icon.className = 'icon'
+  const body = document.createElement('div')
+  body.className = 'body'
+  const title = document.createElement('div')
+  title.className = 'title'
+  const meta = document.createElement('div')
+  meta.className = 'meta'
+  const ops = document.createElement('div')
+  ops.className = 'ops'
+  const op = (label, fn) => {
+    const b = document.createElement('button')
+    b.textContent = label
+    b.onclick = fn
+    ops.appendChild(b)
   }
-  $('inbox').prepend(card)
+  const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})
+  if (item.kind === 'text') {
+    icon.textContent = '텍스트'
+    title.textContent = item.text
+    meta.textContent = `${from}, ${time}`
+    op('복사', async () => toast((await copyItem(item)) ? '복사했습니다' : '복사할 수 없습니다'))
+  } else {
+    const isImage = item.blob.type.startsWith('image/')
+    if (isImage) {
+      const img = document.createElement('img')
+      img.alt = ''
+      img.src = URL.createObjectURL(item.blob)
+      icon.appendChild(img)
+    } else {
+      icon.textContent = (item.name.split('.').pop() || 'file').slice(0, 4).toUpperCase()
+    }
+    title.textContent = item.name
+    meta.textContent = `${fmtSize(item.blob.size)}, ${from}, ${time}`
+    if (isImage) op('복사', async () => toast((await copyItem(item)) ? '복사했습니다' : '복사할 수 없습니다'))
+    op('저장', () => saveItem(item))
+  }
+  body.append(title, meta)
+  li.append(icon, body, ops)
+  $('inbox').prepend(li)
 }
 
 async function showPair() {
-  const url = pairUrl()
-  await QRCode.toCanvas($('qr'), url, {width: 240, margin: 1})
-  $('pair').hidden = false
-}
-
-function showView() {
-  const paired = !!state.secret
-  $('onboarding').hidden = paired
-  $('app').hidden = !paired
+  await QRCode.toCanvas($('qr'), pairUrl(), {width: 220, margin: 0})
+  $('pair').showModal()
 }
 
 async function start(secret) {
-  setSecret(secret)
-  showView()
+  state.secret = secret
+  localStorage.setItem(KEY_SECRET, secret)
+  face('idle')
+  $('foot').hidden = false
   await connect()
 }
 
 function bind() {
-  $('device-name').value = state.name
-  $('device-name').addEventListener('change', e => {
-    state.name = e.target.value.trim() || defaultName()
-    e.target.value = state.name
+  const nameEl = $('device-name')
+  nameEl.value = state.name
+  nameEl.addEventListener('change', () => {
+    state.name = nameEl.value.trim() || defaultName()
+    nameEl.value = state.name
     localStorage.setItem(KEY_NAME, state.name)
-    state.actions?.hello.send({name: state.name})
+    state.hello?.send({name: state.name})
   })
+  nameEl.addEventListener('keydown', e => e.key === 'Enter' && nameEl.blur())
+
   $('btn-create').onclick = () => start(newSecret())
   $('paste-form').onsubmit = e => {
     e.preventDefault()
     const s = parseSecret($('paste-input').value)
-    if (!s) return toast('올바른 페어링 링크가 아닙니다')
+    if (!s) return toast('페어링 링크가 올바르지 않습니다')
     start(s)
   }
-  $('btn-send').onclick = onSendClipboard
-  $('btn-send-text').onclick = onSendText
+
+  $('btn-clip').onclick = onSendClipboard
+  $('btn-file').onclick = () => $('file-input').click()
+  $('file-input').onchange = e => {
+    stage(filesToItems(e.target.files))
+    e.target.value = ''
+  }
+  $('btn-text').onclick = () => {
+    face('text')
+    $('text-input').focus()
+  }
+  $('btn-text-cancel').onclick = () => face('idle')
+  $('btn-text-next').onclick = () => {
+    const text = $('text-input').value
+    if (!text.trim()) return
+    $('text-input').value = ''
+    face('idle')
+    stage([{kind: 'text', text}])
+  }
+  $('btn-pick-cancel').onclick = () => {
+    state.staged = null
+    face('idle')
+  }
+
+  const drop = $('drop')
+  let dragDepth = 0
+  document.addEventListener('dragenter', e => {
+    if (!state.secret || ![...e.dataTransfer.types].includes('Files')) return
+    dragDepth++
+    drop.classList.add('over')
+  })
+  document.addEventListener('dragleave', () => {
+    if (--dragDepth <= 0) {
+      dragDepth = 0
+      drop.classList.remove('over')
+    }
+  })
+  document.addEventListener('dragover', e => e.preventDefault())
+  document.addEventListener('drop', e => {
+    e.preventDefault()
+    dragDepth = 0
+    drop.classList.remove('over')
+    if (state.secret) stage(filesToItems(e.dataTransfer.files))
+  })
+  document.addEventListener('paste', e => {
+    if (!state.secret || e.target.matches('input, textarea')) return
+    const files = e.clipboardData.files
+    if (files.length) return stage(filesToItems(files))
+    const text = e.clipboardData.getData('text/plain')
+    if (text) stage([{kind: 'text', text}])
+  })
+
   $('btn-add').onclick = showPair
-  $('btn-close-pair').onclick = () => ($('pair').hidden = true)
+  $('btn-close-pair').onclick = () => $('pair').close()
   $('btn-copy-link').onclick = async () => {
     try {
       await navigator.clipboard.writeText(pairUrl())
       toast('링크를 복사했습니다')
     } catch {
-      toast('복사 실패')
+      toast('복사할 수 없습니다')
     }
   }
   $('btn-reset').onclick = () => {
-    if (!confirm('새 그룹을 만듭니다. 다른 기기는 다시 페어링해야 합니다.')) return
-    $('pair').hidden = true
+    if (!confirm('새 그룹을 만듭니다. 남길 기기는 다시 페어링해야 합니다.')) return
     start(newSecret()).then(showPair)
   }
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && state.secret && state.room && state.peers.size === 0) connect()
+    if (document.visibilityState === 'visible' && state.room && state.peers.size === 0) connect()
   })
 }
 
@@ -352,11 +451,11 @@ async function init() {
   if (fromHash) {
     history.replaceState(null, '', location.pathname + location.search)
     await start(fromHash)
-    return
+  } else {
+    const saved = localStorage.getItem(KEY_SECRET)
+    if (saved) await start(saved)
+    else face('onboard')
   }
-  const saved = localStorage.getItem(KEY_SECRET)
-  showView()
-  if (saved) await start(saved)
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     navigator.serviceWorker.register('sw.js').catch(() => {})
   }

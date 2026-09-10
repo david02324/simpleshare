@@ -1,6 +1,6 @@
 # simpleshare
 
-Static web page that shares your clipboard (text and images) between your own devices over WebRTC. No server, no build step.
+Static web page that moves clipboard contents and files between your own devices over WebRTC. No server, no build step.
 
 - Signaling via [Trystero](https://github.com/dmotz/trystero) (public Nostr relays), NAT traversal via public STUN only.
 - A 32-byte random secret is the device group. Same secret, same room.
@@ -10,8 +10,9 @@ Static web page that shares your clipboard (text and images) between your own de
 
 1. Open the page on one device and click **새 그룹 만들기**.
 2. **기기 추가** shows a QR code. Scan it with another device, or copy the link and paste it into the other device's input.
-3. Click **클립보드 보내기** to send whatever is on your clipboard. Received items appear in the inbox and are copied automatically when the browser allows it.
-4. **그룹 재설정** rotates the secret. Re-pair the devices you want to keep.
+3. Drop a file on the square, paste, or use **클립보드 보내기** / **파일 선택** / **텍스트 쓰기**. With more than one device connected you pick the recipient; with one it sends right away.
+4. Received text and images are copied to the clipboard automatically when the browser allows it. Files get a **저장** button.
+5. **그룹 재설정** rotates the secret. Re-pair the devices you want to keep.
 
 ## Deploy
 

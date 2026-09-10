@@ -3,9 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#111111">
+  <meta name="theme-color" content="#f3f4f6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0e0f11" media="(prefers-color-scheme: dark)">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>simpleshare</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -13,65 +14,75 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header>
-    <div class="row">
-      <span id="status-dot" class="dot"></span>
-      <input id="device-name" class="name-input" maxlength="24" placeholder="기기 이름" aria-label="기기 이름">
-    </div>
-    <ul id="peer-list" class="peers"></ul>
+  <header class="top">
+    <input id="device-name" class="name" maxlength="24" placeholder="이 기기 이름" aria-label="이 기기 이름" spellcheck="false">
+    <ul id="peer-list" class="peers" aria-label="연결된 기기"></ul>
   </header>
 
-  <section id="onboarding" class="panel" hidden>
-    <h1>simpleshare</h1>
-    <p>기기끼리 클립보드를 직접 주고받습니다. 서버 없음.</p>
-    <button id="btn-create" class="primary">새 그룹 만들기</button>
-    <div class="or">또는</div>
-    <form id="paste-form" class="row">
-      <input id="paste-input" placeholder="다른 기기의 페어링 링크 붙여넣기" autocomplete="off" spellcheck="false">
-      <button type="submit">참여</button>
-    </form>
-  </section>
-
-  <main id="app" hidden>
-    <section class="send panel">
-      <div class="row wrap">
-        <label class="target">
-          대상
-          <select id="target"><option value="">모든 기기</option></select>
-        </label>
-        <button id="btn-send" class="primary big">클립보드 보내기</button>
+  <main>
+    <section id="drop" class="drop" aria-label="보낼 항목">
+      <div class="face" id="face-onboard" hidden>
+        <p class="lead">내 기기끼리 클립보드와 파일을 바로 주고받습니다.</p>
+        <button id="btn-create" class="solid">새 그룹 만들기</button>
+        <form id="paste-form" class="linkform">
+          <input id="paste-input" placeholder="다른 기기의 페어링 링크 붙여넣기" autocomplete="off" spellcheck="false" aria-label="페어링 링크">
+          <button type="submit" class="ghost">참여</button>
+        </form>
       </div>
-      <details class="manual">
-        <summary>텍스트 직접 입력</summary>
-        <textarea id="manual-text" rows="3" placeholder="보낼 텍스트"></textarea>
-        <button id="btn-send-text">전송</button>
-      </details>
-    </section>
 
-    <section class="panel">
-      <h2>받은 항목</h2>
-      <div id="inbox" class="inbox"></div>
-      <p id="inbox-empty" class="muted">아직 받은 항목이 없습니다.</p>
-    </section>
-
-    <section class="panel">
-      <h2>설정</h2>
-      <div class="row wrap">
-        <button id="btn-add">기기 추가</button>
-        <button id="btn-reset" class="danger">그룹 재설정</button>
-      </div>
-      <div id="pair" hidden>
-        <canvas id="qr"></canvas>
-        <p class="muted small">다른 기기 카메라로 스캔하거나 링크를 복사해서 붙여넣으세요. 이 화면은 스크린샷하지 마세요.</p>
-        <div class="row">
-          <button id="btn-copy-link">링크 복사</button>
-          <button id="btn-close-pair">닫기</button>
+      <div class="face" id="face-idle" hidden>
+        <p class="lead">파일을 여기에 놓으세요</p>
+        <p class="sub">붙여넣기도 됩니다</p>
+        <div class="actions">
+          <button id="btn-clip" class="ghost">클립보드 보내기</button>
+          <button id="btn-file" class="ghost">파일 선택</button>
+          <button id="btn-text" class="ghost">텍스트 쓰기</button>
         </div>
       </div>
+
+      <div class="face" id="face-text" hidden>
+        <textarea id="text-input" rows="5" placeholder="보낼 텍스트" aria-label="보낼 텍스트"></textarea>
+        <div class="actions">
+          <button id="btn-text-cancel" class="ghost">취소</button>
+          <button id="btn-text-next" class="solid">다음</button>
+        </div>
+      </div>
+
+      <div class="face" id="face-pick" hidden>
+        <div id="staged" class="staged"></div>
+        <p class="sub">어디로 보낼까요</p>
+        <div id="pick-targets" class="targets"></div>
+        <button id="btn-pick-cancel" class="link">취소</button>
+      </div>
+
+      <div class="face" id="face-send" hidden>
+        <p class="lead" id="send-label">보내는 중</p>
+        <div class="bar"><div id="send-bar"></div></div>
+      </div>
+    </section>
+
+    <section class="inbox-wrap">
+      <ul id="inbox" class="inbox"></ul>
+      <p id="inbox-empty" class="empty">받은 항목은 여기에 쌓입니다. 탭을 닫으면 사라집니다.</p>
     </section>
   </main>
 
-  <div id="toast" class="toast" hidden></div>
+  <footer id="foot" class="foot" hidden>
+    <button id="btn-add" class="link">기기 추가</button>
+    <button id="btn-reset" class="link">그룹 재설정</button>
+  </footer>
+
+  <dialog id="pair" class="sheet">
+    <canvas id="qr"></canvas>
+    <p class="sub">다른 기기로 스캔하거나 링크를 붙여넣으세요. 이 화면은 스크린샷으로 남기지 마세요.</p>
+    <div class="actions">
+      <button id="btn-copy-link" class="ghost">링크 복사</button>
+      <button id="btn-close-pair" class="solid">닫기</button>
+    </div>
+  </dialog>
+
+  <input type="file" id="file-input" multiple hidden>
+  <div id="toast" class="toast" role="status" hidden></div>
   <script type="module" src="app.js"></script>
 </body>
 </html>
