@@ -14,10 +14,14 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="top">
+  <aside class="side">
     <input id="device-name" class="name" maxlength="24" placeholder="이 기기 이름" aria-label="이 기기 이름" spellcheck="false">
-    <ul id="peer-list" class="peers" aria-label="연결된 기기"></ul>
-  </header>
+    <div id="group" hidden>
+      <ul id="device-list" class="devices" aria-label="추가한 기기"></ul>
+      <button id="btn-add" class="solid add">기기 추가</button>
+      <button id="btn-reset" class="link">그룹 재설정</button>
+    </div>
+  </aside>
 
   <main>
     <section id="drop" class="drop" aria-label="보낼 항목">
@@ -61,16 +65,16 @@
       </div>
     </section>
 
-    <section class="inbox-wrap">
-      <ul id="inbox" class="inbox"></ul>
-      <p id="inbox-empty" class="empty">받은 항목은 여기에 쌓입니다. 탭을 닫으면 사라집니다.</p>
-    </section>
   </main>
 
-  <footer id="foot" class="foot" hidden>
-    <button id="btn-add" class="link">기기 추가</button>
-    <button id="btn-reset" class="link">그룹 재설정</button>
-  </footer>
+  <aside class="hist">
+    <div class="hist-head">
+      <span class="hist-title">기록</span>
+      <button id="btn-clear" class="link" hidden>모두 지우기</button>
+    </div>
+    <ul id="inbox" class="inbox"></ul>
+    <p id="inbox-empty" class="empty">보내거나 받은 항목이 이 브라우저에 남습니다.</p>
+  </aside>
 
   <dialog id="pair" class="sheet">
     <canvas id="qr"></canvas>

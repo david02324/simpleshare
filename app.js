@@ -4,6 +4,8 @@ import QRCode from 'https://cdn.jsdelivr.net/npm/qrcode@1.5.4/+esm'
 const APP_ID = 'simpleshare'
 const KEY_SECRET = 'ss.secret'
 const KEY_NAME = 'ss.name'
+const KEY_DEVICE = 'ss.device'
+const KEY_DEVICES = 'ss.devices'
 const RTC = {iceServers: [{urls: 'stun:stun.l.google.com:19302'}]}
 
 const $ = id => document.getElementById(id)
@@ -18,12 +20,58 @@ const b64u = {
 const state = {
   secret: null,
   name: localStorage.getItem(KEY_NAME) || defaultName(),
+  deviceId: localStorage.getItem(KEY_DEVICE) || newDeviceId(),
+  known: loadKnown(),
   room: null,
   clip: null,
   hello: null,
   key: null,
   peers: new Map(),
   staged: null,
+}
+
+function newDeviceId() {
+  const id = b64u.encode(crypto.getRandomValues(new Uint8Array(9)))
+  localStorage.setItem(KEY_DEVICE, id)
+  return id
+}
+
+function loadKnown() {
+  try {
+    return JSON.parse(localStorage.getItem(KEY_DEVICES)) || {}
+  } catch {
+    return {}
+  }
+}
+
+function saveKnown() {
+  localStorage.setItem(KEY_DEVICES, JSON.stringify(state.known))
+}
+
+const db = {
+  open() {
+    if (this.p) return this.p
+    this.p = new Promise((res, rej) => {
+      const req = indexedDB.open(APP_ID, 1)
+      req.onupgradeneeded = () => req.result.createObjectStore('items', {keyPath: 'id'})
+      req.onsuccess = () => res(req.result)
+      req.onerror = () => rej(req.error)
+    })
+    return this.p
+  },
+  async tx(mode, fn) {
+    const d = await this.open()
+    return new Promise((res, rej) => {
+      const t = d.transaction('items', mode)
+      const out = fn(t.objectStore('items'))
+      t.oncomplete = () => res(out?.result)
+      t.onerror = () => rej(t.error)
+    })
+  },
+  all() { return this.tx('readonly', st => st.getAll()) },
+  put(rec) { return this.tx('readwrite', st => st.put(rec)) },
+  del(id) { return this.tx('readwrite', st => st.delete(id)) },
+  clear() { return this.tx('readwrite', st => st.clear()) },
 }
 
 function defaultName() {
@@ -109,14 +157,20 @@ async function connect() {
   const clip = room.makeAction('clip')
 
   hello.onMessage = (data, {peerId}) => {
-    state.peers.set(peerId, {name: String(data?.name || peerId.slice(0, 6))})
+    const name = String(data?.name || peerId.slice(0, 6))
+    const id = typeof data?.id === 'string' ? data.id : null
+    state.peers.set(peerId, {name, id})
+    if (id) {
+      state.known[id] = {name, lastSeen: Date.now()}
+      saveKnown()
+    }
     renderPeers()
   }
   clip.onMessage = onReceive
   room.onPeerJoin = peerId => {
     state.peers.set(peerId, {name: peerId.slice(0, 6)})
     renderPeers()
-    hello.send({name: state.name}, {target: peerId})
+    hello.send({id: state.deviceId, name: state.name}, {target: peerId})
   }
   room.onPeerLeave = peerId => {
     state.peers.delete(peerId)
@@ -126,8 +180,34 @@ async function connect() {
 }
 
 function renderPeers() {
-  const ul = $('peer-list')
-  ul.replaceChildren(...[...state.peers.values()].map(p => Object.assign(document.createElement('li'), {textContent: p.name})))
+  const online = new Set([...state.peers.values()].map(p => p.id))
+  const rows = Object.entries(state.known)
+    .map(([id, d]) => ({id, name: d.name, online: online.has(id), lastSeen: d.lastSeen}))
+    .sort((a, b) => b.online - a.online || b.lastSeen - a.lastSeen)
+  for (const p of state.peers.values()) if (!p.id) rows.unshift({id: null, name: p.name, online: true})
+  const ul = $('device-list')
+  ul.replaceChildren(...rows.map(r => {
+    const li = document.createElement('li')
+    li.className = r.online ? 'on' : 'off'
+    const name = document.createElement('span')
+    name.className = 'dname'
+    name.textContent = r.name
+    li.appendChild(name)
+    if (!r.online) {
+      const rm = document.createElement('button')
+      rm.className = 'rm'
+      rm.title = '목록에서 제거'
+      rm.setAttribute('aria-label', `${r.name} 목록에서 제거`)
+      rm.textContent = '×'
+      rm.onclick = () => {
+        delete state.known[r.id]
+        saveKnown()
+        renderPeers()
+      }
+      li.appendChild(rm)
+    }
+    return li
+  }))
   if (state.staged && !$('face-pick').hidden) renderTargets()
 }
 
@@ -199,6 +279,7 @@ async function sendStaged(target) {
         metadata,
         onProgress: p => (bar.style.width = `${Math.round(p * 100)}%`),
       })
+      addHistory({...it, dir: 'sent', peer: label})
     }
     toast(`${label}에 보냈습니다`)
   } catch (e) {
@@ -259,7 +340,7 @@ async function onReceive(buf, {peerId, metadata}) {
   const item = metadata?.type === 'file'
     ? {kind: 'file', name: metadata.name || 'file', blob: new Blob([bytes], {type: metadata.mime || 'application/octet-stream'})}
     : {kind: 'text', text: dec.decode(bytes)}
-  addInbox(item, from)
+  addHistory({...item, dir: 'received', peer: from})
   const copied = await copyItem(item)
   if (copied) toast(`${from}에서 받아 클립보드에 넣었습니다`)
   else if (item.kind === 'text' || item.blob.type.startsWith('image/')) toast(`${from}에서 받았습니다. 복사를 누르세요`)
@@ -298,8 +379,31 @@ function saveItem(item) {
   setTimeout(() => URL.revokeObjectURL(a.href), 60000)
 }
 
-function addInbox(item, from) {
+function addHistory(item) {
+  const rec = {...item, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: Date.now()}
+  renderHistoryRow(rec)
+  db.put(rec).catch(() => toast('기록을 저장하지 못했습니다'))
+}
+
+async function loadHistory() {
+  try {
+    const rows = await db.all()
+    rows.sort((a, b) => a.ts - b.ts)
+    for (const r of rows) renderHistoryRow(r)
+  } catch {}
+}
+
+function removeHistory(id, li) {
+  li.remove()
+  db.del(id).catch(() => {})
+  const empty = !$('inbox').children.length
+  $('inbox-empty').hidden = !empty
+  $('btn-clear').hidden = empty
+}
+
+function renderHistoryRow(rec) {
   $('inbox-empty').hidden = true
+  $('btn-clear').hidden = false
   const li = document.createElement('li')
   const icon = document.createElement('div')
   icon.className = 'icon'
@@ -311,33 +415,41 @@ function addInbox(item, from) {
   meta.className = 'meta'
   const ops = document.createElement('div')
   ops.className = 'ops'
-  const op = (label, fn) => {
+  const op = (label, fn, cls = '') => {
     const b = document.createElement('button')
     b.textContent = label
+    b.className = cls
     b.onclick = fn
     ops.appendChild(b)
   }
-  const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})
-  if (item.kind === 'text') {
+  const when = new Date(rec.ts)
+  const sameDay = when.toDateString() === new Date().toDateString()
+  const time = sameDay
+    ? when.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})
+    : when.toLocaleDateString([], {month: 'numeric', day: 'numeric'})
+  const who = rec.dir === 'sent' ? `${rec.peer}로 보냄` : `${rec.peer}에서 받음`
+  if (rec.kind === 'text') {
     icon.textContent = '텍스트'
-    title.textContent = item.text
-    meta.textContent = `${from}, ${time}`
-    op('복사', async () => toast((await copyItem(item)) ? '복사했습니다' : '복사할 수 없습니다'))
+    title.textContent = rec.text
+    meta.textContent = `${who}, ${time}`
+    op('복사', async () => toast((await copyItem(rec)) ? '복사했습니다' : '복사할 수 없습니다'))
   } else {
-    const isImage = item.blob.type.startsWith('image/')
+    const isImage = rec.blob.type.startsWith('image/')
     if (isImage) {
       const img = document.createElement('img')
       img.alt = ''
-      img.src = URL.createObjectURL(item.blob)
+      img.src = URL.createObjectURL(rec.blob)
       icon.appendChild(img)
     } else {
-      icon.textContent = (item.name.split('.').pop() || 'file').slice(0, 4).toUpperCase()
+      icon.textContent = (rec.name.split('.').pop() || 'file').slice(0, 4).toUpperCase()
     }
-    title.textContent = item.name
-    meta.textContent = `${fmtSize(item.blob.size)}, ${from}, ${time}`
-    if (isImage) op('복사', async () => toast((await copyItem(item)) ? '복사했습니다' : '복사할 수 없습니다'))
-    op('저장', () => saveItem(item))
+    title.textContent = rec.name
+    meta.textContent = `${fmtSize(rec.blob.size)}, ${who}, ${time}`
+    if (isImage) op('복사', async () => toast((await copyItem(rec)) ? '복사했습니다' : '복사할 수 없습니다'))
+    op('저장', () => saveItem(rec))
   }
+  op('×', () => removeHistory(rec.id, li), 'rm')
+  ops.lastChild.setAttribute('aria-label', '기록에서 제거')
   body.append(title, meta)
   li.append(icon, body, ops)
   $('inbox').prepend(li)
@@ -352,7 +464,7 @@ async function start(secret) {
   state.secret = secret
   localStorage.setItem(KEY_SECRET, secret)
   face('idle')
-  $('foot').hidden = false
+  $('group').hidden = false
   await connect()
 }
 
@@ -363,7 +475,7 @@ function bind() {
     state.name = nameEl.value.trim() || defaultName()
     nameEl.value = state.name
     localStorage.setItem(KEY_NAME, state.name)
-    state.hello?.send({name: state.name})
+    state.hello?.send({id: state.deviceId, name: state.name})
   })
   nameEl.addEventListener('keydown', e => e.key === 'Enter' && nameEl.blur())
 
@@ -426,6 +538,13 @@ function bind() {
     if (text) stage([{kind: 'text', text}])
   })
 
+  $('btn-clear').onclick = () => {
+    if (!confirm('기록을 모두 지웁니다.')) return
+    $('inbox').replaceChildren()
+    $('inbox-empty').hidden = false
+    $('btn-clear').hidden = true
+    db.clear().catch(() => {})
+  }
   $('btn-add').onclick = showPair
   $('btn-close-pair').onclick = () => $('pair').close()
   $('btn-copy-link').onclick = async () => {
@@ -438,6 +557,8 @@ function bind() {
   }
   $('btn-reset').onclick = () => {
     if (!confirm('새 그룹을 만듭니다. 남길 기기는 다시 페어링해야 합니다.')) return
+    state.known = {}
+    saveKnown()
     start(newSecret()).then(showPair)
   }
   document.addEventListener('visibilitychange', () => {
@@ -447,6 +568,7 @@ function bind() {
 
 async function init() {
   bind()
+  loadHistory()
   const fromHash = parseSecret(location.hash)
   if (fromHash) {
     history.replaceState(null, '', location.pathname + location.search)
