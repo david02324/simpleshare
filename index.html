@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111111">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>simpleshare</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="row">
+      <span id="status-dot" class="dot"></span>
+      <input id="device-name" class="name-input" maxlength="24" placeholder="기기 이름" aria-label="기기 이름">
+    </div>
+    <ul id="peer-list" class="peers"></ul>
+  </header>
+
+  <section id="onboarding" class="panel" hidden>
+    <h1>simpleshare</h1>
+    <p>기기끼리 클립보드를 직접 주고받습니다. 서버 없음.</p>
+    <button id="btn-create" class="primary">새 그룹 만들기</button>
+    <div class="or">또는</div>
+    <form id="paste-form" class="row">
+      <input id="paste-input" placeholder="다른 기기의 페어링 링크 붙여넣기" autocomplete="off" spellcheck="false">
+      <button type="submit">참여</button>
+    </form>
+  </section>
+
+  <main id="app" hidden>
+    <section class="send panel">
+      <div class="row wrap">
+        <label class="target">
+          대상
+          <select id="target"><option value="">모든 기기</option></select>
+        </label>
+        <button id="btn-send" class="primary big">클립보드 보내기</button>
+      </div>
+      <details class="manual">
+        <summary>텍스트 직접 입력</summary>
+        <textarea id="manual-text" rows="3" placeholder="보낼 텍스트"></textarea>
+        <button id="btn-send-text">전송</button>
+      </details>
+    </section>
+
+    <section class="panel">
+      <h2>받은 항목</h2>
+      <div id="inbox" class="inbox"></div>
+      <p id="inbox-empty" class="muted">아직 받은 항목이 없습니다.</p>
+    </section>
+
+    <section class="panel">
+      <h2>설정</h2>
+      <div class="row wrap">
+        <button id="btn-add">기기 추가</button>
+        <button id="btn-reset" class="danger">그룹 재설정</button>
+      </div>
+      <div id="pair" hidden>
+        <canvas id="qr"></canvas>
+        <p class="muted small">다른 기기 카메라로 스캔하거나 링크를 복사해서 붙여넣으세요. 이 화면은 스크린샷하지 마세요.</p>
+        <div class="row">
+          <button id="btn-copy-link">링크 복사</button>
+          <button id="btn-close-pair">닫기</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
